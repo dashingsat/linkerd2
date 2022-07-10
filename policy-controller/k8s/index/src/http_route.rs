@@ -1,16 +1,17 @@
-use k8s_gateway_api::ParentReference;
+use anyhow::Result;
+use k8s_gateway_api as api;
 use linkerd_policy_controller_core::http_route::{
-    HeaderMatch, Hostname, HttpMethod, HttpRoute, HttpRouteMatch, PathMatch, QueryParamMatch, Value,
+    HeaderMatch, Hostname, HttpRoute, HttpRouteMatch, Method, PathMatch, QueryParamMatch, Value,
 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouteBinding {
     pub route: HttpRoute,
-    pub parent_refs: Vec<ParentReference>,
+    pub parent_refs: Vec<api::ParentReference>,
 }
 
 impl RouteBinding {
-    pub fn from_resource(route: k8s_gateway_api::HttpRoute) -> Self {
+    pub fn from_resource(route: api::HttpRoute) -> Result<Self> {
         let hostnames = route
             .spec
             .hostnames
@@ -21,8 +22,8 @@ impl RouteBinding {
                     let mut reverse_labels = hostname
                         .split('.')
                         .skip(1)
-                        .map(|label| label.to_owned())
-                        .collect::<Vec<String>>();
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>();
                     reverse_labels.reverse();
                     Hostname::Suffix { reverse_labels }
                 } else {
@@ -34,92 +35,81 @@ impl RouteBinding {
         let matches = route
             .spec
             .rules
-            .iter()
+            .into_iter()
             .flatten()
-            .filter_map(|rule| rule.matches.as_ref())
-            .flatten()
-            .map(|route_match| {
-                let path = route_match
-                    .path
-                    .as_ref()
-                    .map(|path_match| match path_match {
-                        k8s_gateway_api::HttpPathMatch::Exact { value } => {
-                            PathMatch::Exact(value.to_owned())
-                        }
-                        k8s_gateway_api::HttpPathMatch::PathPrefix { value } => {
-                            PathMatch::Prefix(value.to_owned())
-                        }
-                        k8s_gateway_api::HttpPathMatch::RegularExpression { value } => {
-                            PathMatch::Regex(value.to_owned())
-                        }
-                    });
-
-                let headers = route_match
-                    .headers
-                    .iter()
-                    .flatten()
-                    .map(|header_match| match header_match {
-                        k8s_gateway_api::HttpHeaderMatch::Exact { name, value } => HeaderMatch {
-                            name: name.to_owned(),
-                            value: Value::Exact(value.to_owned()),
-                        },
-                        k8s_gateway_api::HttpHeaderMatch::RegularExpression { name, value } => {
-                            HeaderMatch {
-                                name: name.to_owned(),
-                                value: Value::Regex(value.to_owned()),
+            .flat_map(|rule| rule.matches.into_iter().flatten())
+            .map(
+                |api::HttpRouteMatch {
+                     path,
+                     headers,
+                     query_params,
+                     method,
+                 }| {
+                    let path = path
+                        .map(|path_match| match path_match {
+                            api::HttpPathMatch::Exact { value } => Ok(PathMatch::Exact(value)),
+                            api::HttpPathMatch::PathPrefix { value } => {
+                                Ok(PathMatch::Prefix(value))
                             }
-                        }
+                            api::HttpPathMatch::RegularExpression { value } => {
+                                PathMatch::try_regex(&*value)
+                            }
+                        })
+                        .transpose()?;
+
+                    let headers = headers
+                        .into_iter()
+                        .flatten()
+                        .map(|header_match| match header_match {
+                            api::HttpHeaderMatch::Exact { name, value } => Ok(HeaderMatch {
+                                name,
+                                value: Value::Exact(value),
+                            }),
+                            api::HttpHeaderMatch::RegularExpression { name, value } => {
+                                Ok(HeaderMatch {
+                                    name,
+                                    value: Value::try_regex(&*value)?,
+                                })
+                            }
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let query_params = query_params
+                        .into_iter()
+                        .flatten()
+                        .map(|query_param| match query_param {
+                            k8s_gateway_api::HttpQueryParamMatch::Exact { name, value } => {
+                                Ok(QueryParamMatch {
+                                    name,
+                                    value: Value::Exact(value),
+                                })
+                            }
+                            k8s_gateway_api::HttpQueryParamMatch::RegularExpression {
+                                name,
+                                value,
+                            } => Ok(QueryParamMatch {
+                                name,
+                                value: Value::try_regex(&*value)?,
+                            }),
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let method = method.map(|m| m.parse::<Method>()).transpose()?;
+
+                    Ok(HttpRouteMatch {
+                        path,
+                        headers,
+                        query_params,
+                        method,
                     })
-                    .collect();
+                },
+            )
+            .collect::<Result<Vec<_>>>()?;
 
-                let query_params = route_match
-                    .query_params
-                    .iter()
-                    .flatten()
-                    .map(|query_param| match query_param {
-                        k8s_gateway_api::HttpQueryParamMatch::Exact { name, value } => {
-                            QueryParamMatch {
-                                name: name.to_owned(),
-                                value: Value::Exact(value.to_owned()),
-                            }
-                        }
-                        k8s_gateway_api::HttpQueryParamMatch::RegularExpression { name, value } => {
-                            QueryParamMatch {
-                                name: name.to_owned(),
-                                value: Value::Regex(value.to_owned()),
-                            }
-                        }
-                    })
-                    .collect();
-
-                let method = route_match.method.as_ref().and_then(|method| {
-                    match method.to_lowercase().as_str() {
-                        "connect" => Some(HttpMethod::CONNECT),
-                        "get" => Some(HttpMethod::GET),
-                        "post" => Some(HttpMethod::POST),
-                        "put" => Some(HttpMethod::PUT),
-                        "delete" => Some(HttpMethod::DELETE),
-                        "patch" => Some(HttpMethod::PATCH),
-                        "head" => Some(HttpMethod::HEAD),
-                        "options" => Some(HttpMethod::OPTIONS),
-                        "trace" => Some(HttpMethod::TRACE),
-                        _ => None,
-                    }
-                });
-
-                HttpRouteMatch {
-                    path,
-                    headers,
-                    query_params,
-                    method,
-                }
-            })
-            .collect();
-
-        RouteBinding {
+        Ok(RouteBinding {
             route: HttpRoute { hostnames, matches },
             parent_refs: route.spec.inner.parent_refs.unwrap_or_default(),
-        }
+        })
     }
 
     pub fn selects_server(&self, name: &str) -> bool {

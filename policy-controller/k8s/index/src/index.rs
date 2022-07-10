@@ -618,7 +618,13 @@ impl kubert::index::IndexNamespacedResource<k8s_gateway_api::HttpRoute> for Inde
         let name = route.name();
         let _span = info_span!("apply", %ns, %name).entered();
 
-        let route_binding = http_route::RouteBinding::from_resource(route);
+        let route_binding = match http_route::RouteBinding::from_resource(route) {
+            Ok(rb) => rb,
+            Err(error) => {
+                tracing::warn!(%ns, %name, %error, "Invalid HTTPRoute");
+                return;
+            }
+        };
 
         self.ns_or_default_with_reindex(ns, |ns| ns.policy.update_http_route(name, route_binding))
     }
@@ -640,14 +646,16 @@ impl kubert::index::IndexNamespacedResource<k8s_gateway_api::HttpRoute> for Inde
         type Ns = NsUpdate<RouteBinding>;
         let mut updates_by_ns = HashMap::<String, Ns>::default();
         for route in routes.into_iter() {
-            let namespace = route.namespace().expect("HttpRoute must be namespaced");
+            let ns = route.namespace().expect("HttpRoute must be namespaced");
             let name = route.name();
-            let route_binding = http_route::RouteBinding::from_resource(route);
-            updates_by_ns
-                .entry(namespace)
-                .or_default()
-                .added
-                .push((name, route_binding));
+            match http_route::RouteBinding::from_resource(route) {
+                Ok(rb) => {
+                    updates_by_ns.entry(ns).or_default().added.push((name, rb));
+                }
+                Err(error) => {
+                    tracing::warn!(%ns, %name, %error, "Invalid HTTPRoute");
+                }
+            };
         }
         for (ns, names) in deleted.into_iter() {
             updates_by_ns.entry(ns).or_default().removed = names;
