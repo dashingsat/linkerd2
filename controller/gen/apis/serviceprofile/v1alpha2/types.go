@@ -41,6 +41,7 @@ type RouteSpec struct {
 	ResponseClasses []*ResponseClass `json:"responseClasses,omitempty"`
 	IsRetryable     bool             `json:"isRetryable,omitempty"`
 	Timeout         string           `json:"timeout,omitempty"`
+	RateLimiter     *RateLimiter     `json:"rateLimiter,omitempty"`
 }
 
 // RequestMatch describes the conditions under which to match a Route.
@@ -79,6 +80,13 @@ type RetryBudget struct {
 	RetryRatio          float32 `json:"retryRatio"`
 	MinRetriesPerSecond uint32  `json:"minRetriesPerSecond"`
 	TTL                 string  `json:"ttl"`
+}
+
+// RateLimiter describes the rate limiting that applies to this service.
+type RateLimiter struct {
+	TimeWindow            string  `json:"timeWindow"`
+	RequestThresholdCount uint32  `json:"requestThresholdCount"`
+	BurstPercentage       float64 `json:"burstPercentage"`
 }
 
 // WeightedDst is a weighted alternate destination.

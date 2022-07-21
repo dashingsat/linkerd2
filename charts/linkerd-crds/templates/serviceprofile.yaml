@@ -73,6 +73,22 @@ spec:
                   - condition
                   - name
                   properties:
+                    rateLimiter:
+                      type: object
+                      required:
+                      - burstPercentage
+                      - requestThresholdCount
+                      - timeWindow
+                      description: RateLimiter describes the rate limiting that applies to this route.
+                      properties:
+                        timeWindow:
+                          type: string
+                        requestThresholdCount:
+                          format: int32
+                          type: integer
+                        burstPercentage:
+                          format: double
+                          type: number
                     condition:
                       type: object
                       description: RequestMatch describes the conditions under which to match a Route.

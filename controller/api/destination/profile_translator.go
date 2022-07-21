@@ -69,6 +69,16 @@ func defaultRetryBudget() *pb.RetryBudget {
 	}
 }
 
+func defaultRateLimiter() *pb.RateLimiter {
+	return &pb.RateLimiter{
+		TimeWindow: &duration.Duration{
+			Seconds: 0,
+		},
+		RequestThresholdCount: 0,
+		BurstPercentage:       0.0,
+	}
+}
+
 func toDuration(d time.Duration) *duration.Duration {
 	if d == 0 {
 		return nil
@@ -100,6 +110,7 @@ func (pt *profileTranslator) createDestinationProfile(profile *sp.ServiceProfile
 		}
 		budget.Ttl = toDuration(ttl)
 	}
+
 	var opaqueProtocol bool
 	if profile.Spec.OpaquePorts != nil {
 		_, opaqueProtocol = profile.Spec.OpaquePorts[pt.port]
@@ -159,12 +170,23 @@ func toRoute(profile *sp.ServiceProfile, route *sp.RouteSpec) (*pb.Route, error)
 			)
 		}
 	}
+	rateLimiter := defaultRateLimiter()
+	if route.RateLimiter != nil {
+		timeWindow, err := time.ParseDuration(route.RateLimiter.TimeWindow)
+		if err != nil {
+			return nil, err
+		}
+		rateLimiter.TimeWindow = toDuration(timeWindow)
+		rateLimiter.RequestThresholdCount = route.RateLimiter.RequestThresholdCount
+		rateLimiter.BurstPercentage = route.RateLimiter.BurstPercentage
+	}
 	return &pb.Route{
 		Condition:       cond,
 		ResponseClasses: rcs,
 		MetricsLabels:   map[string]string{"route": route.Name},
 		IsRetryable:     route.IsRetryable,
 		Timeout:         toDuration(timeout),
+		RateLimiter:     rateLimiter,
 	}, nil
 }
 
